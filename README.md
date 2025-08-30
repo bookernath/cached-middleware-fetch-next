@@ -19,6 +19,8 @@ pnpm add cached-middleware-fetch-next
 
 🚀 **[Live Demo Application](https://cached-middleware-fetch-next-example.vercel.app/)** - See the cache in action with real-time cache status headers and performance metrics.
 
+The code for the demo can be found here: https://github.com/bookernath/middleware-cache-test
+
 ## Why?
 
 This library helps you get around this limitation in Next.js when hosting on Vercel: https://github.com/vercel/next.js/pull/80378/files
