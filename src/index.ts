@@ -383,8 +383,11 @@ export async function cachedFetch(
   if (cacheOption === 'no-store' || revalidate === 0) {
     const response = await fetch(input, cleanOptions);
     
+    // Clone the response to avoid body consumption issues
+    const responseClone = response.clone();
+    
     // Add cache status headers to indicate cache was bypassed
-    const responseWithCacheHeaders = new Response(response.body, {
+    const responseWithCacheHeaders = new Response(responseClone.body, {
       status: response.status,
       statusText: response.statusText,
       headers: new Headers(response.headers)
@@ -452,8 +455,12 @@ export async function cachedFetch(
     // Fetch from origin (cache miss or expired)
     const response = await fetch(input, cleanOptions);
     
+    // Clone the response first to avoid body consumption issues
+    const responseForCaching = response.clone();
+    const responseForReturn = response.clone();
+    
     // Add cache status headers to indicate this was a miss
-    const responseWithCacheHeaders = new Response(response.body, {
+    const responseWithCacheHeaders = new Response(responseForReturn.body, {
       status: response.status,
       statusText: response.statusText,
       headers: new Headers(response.headers)
@@ -463,7 +470,7 @@ export async function cachedFetch(
     
     // Only cache successful responses (2xx) and GET/POST/PUT requests
     if (response.ok && (method === 'GET' || method === 'POST' || method === 'PUT')) {
-      const cacheEntry = await responseToCache(response.clone(), init);
+      const cacheEntry = await responseToCache(responseForCaching, init);
       
       // Store in cache with appropriate TTL
       const cacheTTL = computeTTL(cacheEntry.expiresAt);
@@ -479,8 +486,11 @@ export async function cachedFetch(
     console.error('[cached-middleware-fetch] Cache operation failed:', error);
     const fallbackResponse = await fetch(input, cleanOptions);
     
+    // Clone the response to avoid body consumption issues
+    const fallbackResponseClone = fallbackResponse.clone();
+    
     // Add cache status headers to indicate this was a miss due to error
-    const responseWithCacheHeaders = new Response(fallbackResponse.body, {
+    const responseWithCacheHeaders = new Response(fallbackResponseClone.body, {
       status: fallbackResponse.status,
       statusText: fallbackResponse.statusText,
       headers: new Headers(fallbackResponse.headers)
