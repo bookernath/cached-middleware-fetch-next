@@ -313,7 +313,7 @@ export async function cachedFetch(
   try {
     // Try to get from cache first
     if (cacheOption === 'force-cache' || cacheOption === 'auto no cache') {
-      const cachedEntry = await cache.get<CacheEntry>(cacheKey);
+      const cachedEntry = await cache.get(cacheKey) as CacheEntry | undefined;
       
       if (cachedEntry && !isCacheEntryExpired(cachedEntry)) {
         // Check if we need to revalidate in the background

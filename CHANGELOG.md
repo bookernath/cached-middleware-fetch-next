@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1] - 2025-01-03
+
+### Fixed
+- Fixed TypeScript compilation errors with Vercel cache API
+  - Removed invalid generic type parameter from `cache.get<CacheEntry>()` call
+  - Added proper type assertion for cache.get() return value
+  - Resolved type mismatch issues in cache entry handling functions
+
 ## [0.3.1] - 2025-01-03
 
 ### Added
