@@ -1,6 +1,6 @@
 {
   "name": "cached-middleware-fetch-next",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A Next.js fetch wrapper for edge middleware that uses Vercel Runtime Cache as its caching backend",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

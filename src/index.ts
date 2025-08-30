@@ -1,5 +1,5 @@
-// @ts-ignore - getCache is available at runtime on Vercel
-import { getCache } from '@vercel/functions';
+// @ts-ignore - getCache and waitUntil are available at runtime on Vercel
+import { getCache, waitUntil } from '@vercel/functions';
 import type { CachedFetchOptions, CacheEntry } from './types';
 
 // Re-export types for convenience
@@ -182,21 +182,27 @@ async function generateCacheKey(
 }
 
 /**
- * Check if a cache entry is still valid based on revalidate time
+ * Check if a cache entry has expired (not just stale)
  */
-function isCacheEntryValid(entry: CacheEntry): boolean {
-  if (entry.revalidate === false) {
-    // Cache indefinitely
-    return true;
+function isCacheEntryExpired(entry: CacheEntry): boolean {
+  if (!entry.expiresAt) {
+    // No expiry set, consider valid
+    return false;
   }
   
-  if (typeof entry.revalidate === 'number' && entry.revalidate > 0) {
-    const expiryTime = entry.timestamp + (entry.revalidate * 1000);
-    return Date.now() < expiryTime;
+  return Date.now() > entry.expiresAt;
+}
+
+/**
+ * Check if a cache entry needs revalidation
+ */
+function needsRevalidation(entry: CacheEntry): boolean {
+  if (!entry.revalidateAfter) {
+    // No revalidation time set
+    return false;
   }
   
-  // Default behavior - cache is valid
-  return true;
+  return Date.now() > entry.revalidateAfter;
 }
 
 /**
@@ -209,14 +215,39 @@ async function responseToCache(response: Response, options?: CachedFetchOptions)
   });
   
   const data = await response.text();
+  const now = Date.now();
+  
+  // Calculate revalidation and expiry times
+  let revalidateAfter: number | undefined;
+  let expiresAt: number | undefined;
+  
+  const revalidate = options?.next?.revalidate;
+  const expires = options?.next?.expires;
+  
+  if (revalidate === false) {
+    // Never revalidate, but set a default expiry of 365 days
+    expiresAt = now + (365 * 24 * 60 * 60 * 1000);
+  } else if (typeof revalidate === 'number' && revalidate > 0) {
+    revalidateAfter = now + (revalidate * 1000);
+    
+    // Set expiry time
+    if (expires && expires > revalidate) {
+      expiresAt = now + (expires * 1000);
+    } else {
+      // Default expiry: 24 hours or 10x revalidate time, whichever is larger
+      const defaultExpiry = Math.max(86400, revalidate * 10);
+      expiresAt = now + (defaultExpiry * 1000);
+    }
+  }
   
   return {
     data,
     headers,
     status: response.status,
     statusText: response.statusText,
-    timestamp: Date.now(),
-    revalidate: options?.next?.revalidate,
+    timestamp: now,
+    revalidateAfter,
+    expiresAt,
     tags: options?.next?.tags,
   };
 }
@@ -284,21 +315,53 @@ export async function cachedFetch(
     if (cacheOption === 'force-cache' || cacheOption === 'auto no cache') {
       const cachedEntry = await cache.get<CacheEntry>(cacheKey);
       
-      if (cachedEntry && isCacheEntryValid(cachedEntry)) {
-        // Return cached response
+      if (cachedEntry && !isCacheEntryExpired(cachedEntry)) {
+        // Check if we need to revalidate in the background
+        if (needsRevalidation(cachedEntry)) {
+          // Return stale data immediately and refresh in background (SWR)
+          const backgroundRefresh = async () => {
+            try {
+              const freshResponse = await fetch(input, cleanFetchOptions(init));
+              
+              if (freshResponse.ok && method === 'GET') {
+                const freshCacheEntry = await responseToCache(freshResponse.clone(), init);
+                const cacheTTL = freshCacheEntry.expiresAt 
+                  ? Math.floor((freshCacheEntry.expiresAt - Date.now()) / 1000)
+                  : 86400; // Default 24 hours
+                await cache.set(cacheKey, freshCacheEntry, { ttl: cacheTTL });
+              }
+            } catch (error) {
+              console.error('[cached-middleware-fetch] Background refresh failed:', error);
+            }
+          };
+          
+          // Use waitUntil to extend the lifetime of the request for background refresh
+          if (typeof waitUntil === 'function') {
+            waitUntil(backgroundRefresh());
+          } else {
+            // Fallback if waitUntil is not available (non-Vercel environment)
+            backgroundRefresh().catch(() => {});
+          }
+        }
+        
+        // Return cached response (stale or fresh)
         return cacheToResponse(cachedEntry);
       }
     }
     
-    // Fetch from origin
+    // Fetch from origin (cache miss or expired)
     const response = await fetch(input, cleanFetchOptions(init));
     
     // Only cache successful responses (2xx) and GET requests by default
     if (response.ok && method === 'GET') {
       const cacheEntry = await responseToCache(response.clone(), init);
       
-      // Store in cache (fire and forget)
-      cache.set(cacheKey, cacheEntry).catch((error: unknown) => {
+      // Store in cache with appropriate TTL
+      const cacheTTL = cacheEntry.expiresAt 
+        ? Math.floor((cacheEntry.expiresAt - Date.now()) / 1000)
+        : 86400; // Default 24 hours
+      
+      cache.set(cacheKey, cacheEntry, { ttl: cacheTTL }).catch((error: unknown) => {
         console.error('[cached-middleware-fetch] Failed to cache response:', error);
       });
     }

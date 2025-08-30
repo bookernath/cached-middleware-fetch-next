@@ -21,6 +21,7 @@ In Next.js edge middleware, the built-in Data Cache that normally works with `fe
 - 🚀 Drop-in replacement for fetch in Next.js middleware
 - 💾 Uses Vercel Runtime Cache for persistence
 - 🔄 Supports Next.js fetch options (`cache`, `next.revalidate`, `next.tags`)
+- ⏱️ **SWR (Stale-While-Revalidate)** caching strategy using `waitUntil()`
 - 🎯 Automatic cache key generation
 - ⚡ Graceful fallback to regular fetch if cache fails
 - 📦 Lightweight with minimal dependencies
@@ -83,6 +84,35 @@ const response6 = await cachedFetch('https://api.example.com/data', {
     fetchCacheKeyPrefix: `tenant-${tenantId}` 
   }
 });
+
+// SWR-style caching with separate revalidate and expiry times
+const response7 = await cachedFetch('https://api.example.com/data', {
+  next: {
+    revalidate: 3600,  // Check for fresh data after 1 hour
+    expires: 86400     // Keep stale data for up to 24 hours
+  }
+});
+```
+
+### SWR (Stale-While-Revalidate) Caching
+
+This package implements SWR caching behavior using Vercel's `waitUntil()` function:
+
+1. **Immediate Response**: Always returns cached data immediately if available (even if stale)
+2. **Background Refresh**: If data is stale (past `revalidate` time) but not expired, triggers a background refresh
+3. **Non-blocking**: The user gets the stale data immediately while fresh data is fetched in the background
+
+```typescript
+// Example: Product data that updates hourly but can be stale for a day
+const response = await cachedFetch('https://api.example.com/products', {
+  next: {
+    revalidate: 3600,  // Consider stale after 1 hour
+    expires: 86400     // But keep serving stale data for up to 24 hours
+  }
+});
+
+// Users get instant responses, even with stale data
+// Fresh data is fetched in the background when needed
 ```
 
 ### Real-World Example: Route Resolution in Middleware
@@ -165,9 +195,19 @@ interface CachedFetchOptions extends RequestInit {
 
 #### Revalidation Options
 
-- `false`: Cache indefinitely
-- `0`: Prevent caching (same as `cache: 'no-store'`)
-- `number`: Cache lifetime in seconds
+- `revalidate`:
+  - `false`: Never revalidate (cache indefinitely)
+  - `0`: Prevent caching (same as `cache: 'no-store'`)
+  - `number`: Time in seconds before data is considered stale
+
+- `expires`:
+  - `number`: Absolute expiry time in seconds (must be greater than `revalidate`)
+  - If not specified, defaults to 24 hours or 10x the revalidate time, whichever is larger
+
+- `tags`:
+  - `string[]`: Cache tags for manual invalidation
+  - **Note**: Automatic tag-based revalidation is not supported
+  - Tags can be used with Vercel's cache APIs for manual clearing
 
 ## How It Works
 
@@ -177,9 +217,18 @@ interface CachedFetchOptions extends RequestInit {
    - Includes URL, method, headers, body, and all request options
    - Automatically removes 'traceparent' and 'tracestate' headers to prevent cache fragmentation
    - Supports custom cache key prefixes via `next.fetchCacheKeyPrefix`
-2. **Runtime Cache**: Uses Vercel's Runtime Cache (`@vercel/functions`) for storage
-3. **Automatic Expiry**: Honors revalidation times and checks cache validity
-4. **Graceful Degradation**: Falls back to regular fetch if cache operations fail
+
+2. **SWR Caching Strategy**:
+   - Returns cached data immediately, even if stale
+   - Uses `waitUntil()` to refresh stale data in the background
+   - Separates revalidation time from expiry time for optimal performance
+   - Best-effort approach: background refresh won't block the response
+
+3. **Runtime Cache**: Uses Vercel's Runtime Cache (`@vercel/functions`) for storage
+
+4. **Automatic Expiry**: Honors both revalidation and expiry times
+
+5. **Graceful Degradation**: Falls back to regular fetch if cache operations fail
 
 ## Requirements
 

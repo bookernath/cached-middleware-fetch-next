@@ -63,5 +63,19 @@ async function example5() {
   console.log('Fetched data with tenant prefix:', data);
 }
 
+// Example 6: SWR-style caching
+async function example6() {
+  console.log('\nExample 6: SWR caching with separate revalidate and expiry');
+  const response = await cachedFetch('https://jsonplaceholder.typicode.com/posts/6', {
+    next: {
+      revalidate: 30,    // Consider stale after 30 seconds
+      expires: 300       // But keep serving for up to 5 minutes
+    }
+  });
+  const data = await response.json();
+  console.log('Fetched data with SWR:', data);
+  console.log('If cached and stale, fresh data is being fetched in the background');
+}
+
 console.log('Note: These examples will only work in a Vercel environment where getCache is available.');
 console.log('In other environments, the package will fallback to regular fetch.\n');

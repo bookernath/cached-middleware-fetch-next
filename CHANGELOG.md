@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2025-01-03
+
+### Added
+- **SWR (Stale-While-Revalidate) caching strategy**
+  - Returns stale data immediately while refreshing in the background
+  - Uses Vercel's `waitUntil()` to extend request lifetime for background refresh
+  - Separates `revalidate` time from `expires` time for optimal performance
+- New `next.expires` option to set absolute cache expiry time
+  - Allows serving stale data beyond revalidation time
+  - Defaults to 24 hours or 10x revalidate time, whichever is larger
+- Better cache TTL management based on expiry times
+
+### Changed
+- Cache entries now store both `revalidateAfter` and `expiresAt` timestamps
+- Improved cache validation logic to support SWR behavior
+- Documentation clarified that tag-based revalidation is not automatic
+
 ## [0.2.0] - 2025-01-03
 
 ### Changed
