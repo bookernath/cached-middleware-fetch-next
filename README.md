@@ -14,6 +14,8 @@ pnpm add cached-middleware-fetch-next
 
 ## Why?
 
+This library helps you get around this limitation in Next.js when hosting on Vercel: https://github.com/vercel/next.js/pull/80378/files
+
 In Next.js edge middleware, the built-in Data Cache that normally works with `fetch()` is not available. This package solves that problem by providing a fetch wrapper that uses Vercel's Runtime Cache as its backend, allowing you to cache fetch requests in middleware with the same familiar API as Next.js's extended fetch.
 
 ## Features
