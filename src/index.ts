@@ -270,14 +270,26 @@ async function responseToCache(response: Response, options?: CachedFetchOptions)
 }
 
 /**
- * Convert a cache entry back to a Response object
+ * Convert a cache entry back to a Response object with cache status headers
  */
-function cacheToResponse(entry: CacheEntry): Response {
+function cacheToResponse(entry: CacheEntry, cacheStatus: 'HIT' | 'STALE' = 'HIT'): Response {
   const headers = new Headers(entry.headers);
   headers.delete('content-length');
   if (entry.contentType && !headers.get('content-type')) {
     headers.set('content-type', entry.contentType);
   }
+  
+  // Add cache status headers
+  const now = Date.now();
+  const cacheAge = Math.floor((now - entry.timestamp) / 1000);
+  headers.set('X-Cache-Status', cacheStatus);
+  headers.set('X-Cache-Age', cacheAge.toString());
+  
+  if (entry.expiresAt) {
+    const expiresIn = Math.max(0, Math.floor((entry.expiresAt - now) / 1000));
+    headers.set('X-Cache-Expires-In', expiresIn.toString());
+  }
+  
   let body: BodyInit | null = null;
   if ((entry as any).isBinary) {
     const bytes = fromBase64(entry.data as string);
@@ -369,7 +381,18 @@ export async function cachedFetch(
   
   // Skip cache for no-store or revalidate: 0
   if (cacheOption === 'no-store' || revalidate === 0) {
-    return fetch(input, cleanOptions);
+    const response = await fetch(input, cleanOptions);
+    
+    // Add cache status headers to indicate cache was bypassed
+    const responseWithCacheHeaders = new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: new Headers(response.headers)
+    });
+    responseWithCacheHeaders.headers.set('X-Cache-Status', 'MISS');
+    responseWithCacheHeaders.headers.set('X-Cache-Age', '0');
+    
+    return responseWithCacheHeaders;
   }
   
   // Generate cache key
@@ -395,7 +418,8 @@ export async function cachedFetch(
         !isCacheEntryExpired(cachedEntry)
       ) {
         // Check if we need to revalidate in the background
-        if (needsRevalidation(cachedEntry)) {
+        const isStale = needsRevalidation(cachedEntry);
+        if (isStale) {
           // Return stale data immediately and refresh in background (SWR)
           const backgroundRefresh = async () => {
             try {
@@ -420,13 +444,22 @@ export async function cachedFetch(
           }
         }
         
-        // Return cached response (stale or fresh)
-        return cacheToResponse(cachedEntry);
+        // Return cached response with appropriate cache status
+        return cacheToResponse(cachedEntry, isStale ? 'STALE' : 'HIT');
       }
     }
     
     // Fetch from origin (cache miss or expired)
     const response = await fetch(input, cleanOptions);
+    
+    // Add cache status headers to indicate this was a miss
+    const responseWithCacheHeaders = new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: new Headers(response.headers)
+    });
+    responseWithCacheHeaders.headers.set('X-Cache-Status', 'MISS');
+    responseWithCacheHeaders.headers.set('X-Cache-Age', '0');
     
     // Only cache successful responses (2xx) and GET/POST/PUT requests
     if (response.ok && (method === 'GET' || method === 'POST' || method === 'PUT')) {
@@ -440,11 +473,22 @@ export async function cachedFetch(
       });
     }
     
-    return response;
+    return responseWithCacheHeaders;
   } catch (error) {
     // If cache operations fail, fallback to regular fetch
     console.error('[cached-middleware-fetch] Cache operation failed:', error);
-    return fetch(input, cleanOptions);
+    const fallbackResponse = await fetch(input, cleanOptions);
+    
+    // Add cache status headers to indicate this was a miss due to error
+    const responseWithCacheHeaders = new Response(fallbackResponse.body, {
+      status: fallbackResponse.status,
+      statusText: fallbackResponse.statusText,
+      headers: new Headers(fallbackResponse.headers)
+    });
+    responseWithCacheHeaders.headers.set('X-Cache-Status', 'MISS');
+    responseWithCacheHeaders.headers.set('X-Cache-Age', '0');
+    
+    return responseWithCacheHeaders;
   }
 }
 

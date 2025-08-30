@@ -19,6 +19,11 @@ export async function middleware(request: NextRequest) {
     });
 
     const products = await productsResponse.json();
+    
+    // Check cache status via response headers
+    const cacheStatus = productsResponse.headers.get('X-Cache-Status');
+    const cacheAge = productsResponse.headers.get('X-Cache-Age');
+    console.log(`Products API: ${cacheStatus} (${cacheAge}s old)`);
 
     // Example 2: Cache REST API (Settings) indefinitely with tags
     // Use this when data changes rarely; invalidate manually by tag when needed
@@ -59,13 +64,23 @@ export async function middleware(request: NextRequest) {
     });
 
     const routeData = await graphqlResponse.json();
+    
+    // Example: Add cache information to response headers
+    const routeCacheStatus = graphqlResponse.headers.get('X-Cache-Status');
+    const routeCacheAge = graphqlResponse.headers.get('X-Cache-Age');
 
     // Apply routing logic based on cached route data
     if (routeData.route?.redirect) {
       return NextResponse.redirect(new URL(routeData.route.redirect, request.url));
     }
 
-    return NextResponse.next();
+    // Pass cache information to the client via headers
+    return NextResponse.next({
+      headers: {
+        'X-Route-Cache-Status': routeCacheStatus || 'UNKNOWN',
+        'X-Route-Cache-Age': routeCacheAge || '0',
+      },
+    });
   } catch (error) {
     console.error('Middleware error:', error);
     return NextResponse.next();

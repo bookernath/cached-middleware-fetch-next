@@ -26,6 +26,7 @@ In Next.js edge middleware, the built-in Data Cache that normally works with `fe
 - ⏱️ **SWR (Stale-While-Revalidate)** caching strategy using `waitUntil()`
 - 🎯 Automatic cache key generation (includes body for proper POST/PUT caching)
 - 📊 **GraphQL Support** - Caches POST requests with different queries separately
+- 📈 **Cache Status Headers** - Get detailed cache information via response headers
 - ⚡ Graceful fallback to regular fetch if cache fails
 - 📦 Lightweight with minimal dependencies
 
@@ -116,6 +117,46 @@ const response = await cachedFetch('https://api.example.com/products', {
 
 // Users get instant responses, even with stale data
 // Fresh data is fetched in the background when needed
+```
+
+### Cache Status Headers
+
+Every response from `cachedFetch` includes cache status information via headers:
+
+```typescript
+const response = await cachedFetch('https://api.example.com/data', {
+  next: { revalidate: 300 }
+});
+
+// Check cache status
+const cacheStatus = response.headers.get('X-Cache-Status'); // 'HIT' | 'MISS' | 'STALE'
+const cacheAge = response.headers.get('X-Cache-Age'); // Age in seconds
+const expiresIn = response.headers.get('X-Cache-Expires-In'); // Time until expiry (if applicable)
+
+console.log(`Cache ${cacheStatus}: ${cacheAge}s old, expires in ${expiresIn}s`);
+```
+
+**Cache Status Values:**
+- **`HIT`**: Fresh cached data served instantly
+- **`STALE`**: Cached data served instantly, background refresh triggered  
+- **`MISS`**: No cached data available, fetched from origin
+
+**Example Usage in Middleware:**
+```typescript
+export async function middleware(request: NextRequest) {
+  const response = await cachedFetch('https://api.example.com/data', {
+    next: { revalidate: 60 }
+  });
+  
+  const cacheStatus = response.headers.get('X-Cache-Status');
+  
+  // Add cache info to your response
+  return NextResponse.next({
+    headers: {
+      'X-Cache-Info': `${cacheStatus} (${response.headers.get('X-Cache-Age')}s old)`
+    }
+  });
+}
 ```
 
 ### GraphQL Support
@@ -221,6 +262,14 @@ const response = await fetch('https://api.example.com/data', {
 
 - `input`: `RequestInfo | URL` - The resource to fetch
 - `init?`: `CachedFetchOptions` - Extended fetch options
+
+#### Returns
+
+A `Promise<Response>` that resolves to a Response object with additional cache status headers:
+
+- `X-Cache-Status`: `'HIT' | 'MISS' | 'STALE'` - Cache status
+- `X-Cache-Age`: `string` - Age of cached data in seconds (0 for fresh/miss)  
+- `X-Cache-Expires-In`: `string` - Time until cache expires in seconds (if applicable)
 
 #### CachedFetchOptions
 

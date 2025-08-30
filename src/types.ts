@@ -1,5 +1,10 @@
 /**
  * Extended fetch options that mirror Next.js fetch API
+ * 
+ * The returned Response will include cache status headers:
+ * - X-Cache-Status: 'HIT' | 'MISS' | 'STALE'
+ * - X-Cache-Age: Age of cached data in seconds (0 for fresh/miss)
+ * - X-Cache-Expires-In: Time until cache expires in seconds (if applicable)
  */
 export interface CachedFetchOptions extends Omit<RequestInit, 'cache'> {
   /**
