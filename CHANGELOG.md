@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2025-01-03
+
+### Added
+- Support for caching POST and PUT requests
+  - Enables GraphQL query caching
+  - Each unique request body generates a different cache key
+  - Particularly useful for GraphQL endpoints where different queries need separate cache entries
+- GraphQL examples in documentation
+
+### Changed
+- Updated cache logic to include POST and PUT methods alongside GET
+- Documentation now highlights GraphQL support as a key feature
+
 ## [0.3.0] - 2025-01-03
 
 ### Added

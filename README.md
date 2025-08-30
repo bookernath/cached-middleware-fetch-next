@@ -22,7 +22,8 @@ In Next.js edge middleware, the built-in Data Cache that normally works with `fe
 - 💾 Uses Vercel Runtime Cache for persistence
 - 🔄 Supports Next.js fetch options (`cache`, `next.revalidate`, `next.tags`)
 - ⏱️ **SWR (Stale-While-Revalidate)** caching strategy using `waitUntil()`
-- 🎯 Automatic cache key generation
+- 🎯 Automatic cache key generation (includes body for proper POST/PUT caching)
+- 📊 **GraphQL Support** - Caches POST requests with different queries separately
 - ⚡ Graceful fallback to regular fetch if cache fails
 - 📦 Lightweight with minimal dependencies
 
@@ -113,6 +114,52 @@ const response = await cachedFetch('https://api.example.com/products', {
 
 // Users get instant responses, even with stale data
 // Fresh data is fetched in the background when needed
+```
+
+### GraphQL Support
+
+The package fully supports caching GraphQL queries sent via POST requests. Each unique query (based on the request body) gets its own cache entry:
+
+```typescript
+// Example: Caching GraphQL queries
+const response = await cachedFetch('https://api.example.com/graphql', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    query: `
+      query GetProducts($category: String!) {
+        products(category: $category) {
+          id
+          name
+          price
+        }
+      }
+    `,
+    variables: { category: 'electronics' }
+  }),
+  next: {
+    revalidate: 3600,  // Cache for 1 hour
+    tags: ['products', 'electronics']
+  }
+});
+
+const data = await response.json();
+
+// Different queries or variables will have different cache keys
+// So this query will be cached separately:
+const response2 = await cachedFetch('https://api.example.com/graphql', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    query: `query GetProducts($category: String!) { ... }`,
+    variables: { category: 'clothing' }  // Different variable = different cache key
+  }),
+  next: { revalidate: 3600 }
+});
 ```
 
 ### Real-World Example: Route Resolution in Middleware
@@ -247,7 +294,7 @@ This package is designed specifically for the Edge Runtime and works in:
 ## Limitations
 
 - Only caches successful responses (2xx status codes)
-- Only caches GET requests by default
+- Only caches GET, POST, and PUT requests
 - Cache tags are stored but on-demand revalidation is not yet implemented
 - Runtime Cache has size limits (check Vercel documentation)
 - The `getCache` function from `@vercel/functions` is only available at runtime on Vercel's infrastructure

@@ -77,5 +77,38 @@ async function example6() {
   console.log('If cached and stale, fresh data is being fetched in the background');
 }
 
+// Example 7: GraphQL query caching
+async function example7() {
+  console.log('\nExample 7: Caching GraphQL POST requests');
+  
+  // This is a mock GraphQL endpoint - replace with a real one
+  const response = await cachedFetch('https://jsonplaceholder.typicode.com/posts', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query: `
+        query GetPost($id: ID!) {
+          post(id: $id) {
+            id
+            title
+            body
+          }
+        }
+      `,
+      variables: { id: '1' }
+    }),
+    next: {
+      revalidate: 60,  // Cache GraphQL responses for 1 minute
+      tags: ['graphql', 'posts']
+    }
+  });
+  
+  const data = await response.json();
+  console.log('GraphQL response:', data);
+  console.log('Note: Different queries/variables will be cached separately');
+}
+
 console.log('Note: These examples will only work in a Vercel environment where getCache is available.');
 console.log('In other environments, the package will fallback to regular fetch.\n');

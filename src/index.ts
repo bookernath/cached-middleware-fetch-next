@@ -323,7 +323,7 @@ export async function cachedFetch(
             try {
               const freshResponse = await fetch(input, cleanFetchOptions(init));
               
-              if (freshResponse.ok && method === 'GET') {
+              if (freshResponse.ok && (method === 'GET' || method === 'POST' || method === 'PUT')) {
                 const freshCacheEntry = await responseToCache(freshResponse.clone(), init);
                 const cacheTTL = freshCacheEntry.expiresAt 
                   ? Math.floor((freshCacheEntry.expiresAt - Date.now()) / 1000)
@@ -352,8 +352,8 @@ export async function cachedFetch(
     // Fetch from origin (cache miss or expired)
     const response = await fetch(input, cleanFetchOptions(init));
     
-    // Only cache successful responses (2xx) and GET requests by default
-    if (response.ok && method === 'GET') {
+    // Only cache successful responses (2xx) and GET/POST/PUT requests
+    if (response.ok && (method === 'GET' || method === 'POST' || method === 'PUT')) {
       const cacheEntry = await responseToCache(response.clone(), init);
       
       // Store in cache with appropriate TTL
