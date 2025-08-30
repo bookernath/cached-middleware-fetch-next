@@ -1,56 +1,184 @@
 // @ts-ignore - getCache is available at runtime on Vercel
 import { getCache } from '@vercel/functions';
-import type { CachedFetchOptions, CacheEntry, CacheKeyOptions } from './types';
+import type { CachedFetchOptions, CacheEntry } from './types';
 
 // Re-export types for convenience
 export type { CachedFetchOptions, CacheEntry } from './types';
 
 /**
- * Generate a unique cache key for the request
+ * Process body for cache key generation, matching Next.js behavior
+ * Note: The body is consumed here for cache key generation only.
+ * The original body is preserved for the actual fetch request.
  */
-function generateCacheKey(options: CacheKeyOptions): string {
-  const { url, method = 'GET', headers = {}, body } = options;
+async function processBodyForCacheKey(body: BodyInit | null | undefined): Promise<{ chunks: any[], ogBody?: BodyInit }> {
+  if (!body) return { chunks: [] };
   
-  // Create a stable key from request properties
-  const keyParts = [
-    url,
-    method.toUpperCase(),
-  ];
+  // Handle Uint8Array
+  if (body instanceof Uint8Array) {
+    const decoder = new TextDecoder();
+    const decoded = decoder.decode(body);
+    return { chunks: [decoded], ogBody: body };
+  }
   
-  // Add relevant headers to the key (like authorization, content-type)
-  if (headers) {
-    let headerObj: Record<string, string> = {};
+  // Handle ReadableStream
+  if (body instanceof ReadableStream) {
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
     
-    if (headers instanceof Headers) {
-      // Convert Headers to object
-      headers.forEach((value, key) => {
-        headerObj[key] = value;
-      });
-    } else if (Array.isArray(headers)) {
-      // Handle array format
-      headers.forEach(([key, value]) => {
-        headerObj[key] = value;
-      });
-    } else {
-      // Handle object format
-      headerObj = headers as Record<string, string>;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
     }
     
-    const relevantHeaders = ['authorization', 'content-type', 'accept'];
-    relevantHeaders.forEach(header => {
-      const value = headerObj[header] || headerObj[header.toLowerCase()];
-      if (value) {
-        keyParts.push(`${header}:${value}`);
+    // Reconstruct as single Uint8Array
+    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const combined = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      combined.set(chunk, offset);
+      offset += chunk.length;
+    }
+    
+    const decoder = new TextDecoder();
+    const decoded = decoder.decode(combined);
+    return { chunks: [decoded], ogBody: combined };
+  }
+  
+  // Handle FormData
+  if (typeof FormData !== 'undefined' && body instanceof FormData) {
+    const serialized: string[] = [];
+    body.forEach((value, key) => {
+      if (typeof value === 'string') {
+        serialized.push(`${key}=${value}`);
+      }
+    });
+    return { chunks: [serialized.join(',')] };
+  }
+  
+  // Handle URLSearchParams
+  if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) {
+    const serialized: string[] = [];
+    body.forEach((value, key) => {
+      serialized.push(`${key}=${value}`);
+    });
+    return { chunks: [serialized.join(',')] };
+  }
+  
+  // Handle Blob
+  if (typeof Blob !== 'undefined' && body instanceof Blob) {
+    const text = await body.text();
+    const newBlob = new Blob([text], { type: body.type });
+    return { chunks: [text], ogBody: newBlob };
+  }
+  
+  // Handle string
+  if (typeof body === 'string') {
+    return { chunks: [body] };
+  }
+  
+  // Fallback
+  return { chunks: [JSON.stringify(body)] };
+}
+
+/**
+ * Convert headers to plain object and remove trace context headers
+ * CRITICAL: Removes 'traceparent' and 'tracestate' headers from cache key
+ * to prevent cache fragmentation in distributed tracing scenarios
+ */
+function processHeadersForCacheKey(headers: HeadersInit | undefined): Record<string, string> {
+  const headerObj: Record<string, string> = {};
+  
+  if (!headers) return headerObj;
+  
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      // Skip trace context headers
+      if (key.toLowerCase() !== 'traceparent' && key.toLowerCase() !== 'tracestate') {
+        headerObj[key] = value;
+      }
+    });
+  } else if (Array.isArray(headers)) {
+    headers.forEach(([key, value]) => {
+      // Skip trace context headers
+      if (key.toLowerCase() !== 'traceparent' && key.toLowerCase() !== 'tracestate') {
+        headerObj[key] = value;
+      }
+    });
+  } else {
+    // Plain object
+    Object.entries(headers).forEach(([key, value]) => {
+      // Skip trace context headers
+      if (key.toLowerCase() !== 'traceparent' && key.toLowerCase() !== 'tracestate') {
+        headerObj[key] = value;
       }
     });
   }
   
-  // Add body to key for non-GET requests
-  if (body && method !== 'GET') {
-    keyParts.push(typeof body === 'string' ? body : JSON.stringify(body));
+  return headerObj;
+}
+
+/**
+ * Generate SHA-256 hash of a string
+ */
+async function sha256(message: string): Promise<string> {
+  // Check if we're in Edge runtime (crypto.subtle is available)
+  if (typeof crypto !== 'undefined' && crypto.subtle && crypto.subtle.digest) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(message);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   }
   
-  return keyParts.join('|');
+  // Node.js runtime
+  // @ts-ignore - crypto module is available in Node.js
+  const nodeCrypto = await import('crypto');
+  return nodeCrypto.createHash('sha256').update(message).digest('hex');
+}
+
+/**
+ * Generate a cache key matching Next.js fetch cache behavior
+ */
+async function generateCacheKey(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  fetchCacheKeyPrefix?: string
+): Promise<string> {
+  // Extract URL and create Request object for consistent processing
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+  const request = new Request(url, init);
+  
+  // Process body
+  const { chunks: bodyChunks } = await processBodyForCacheKey(init?.body);
+  
+  // Process headers (removing trace context headers)
+  const headers = processHeadersForCacheKey(init?.headers);
+  
+  // Build cache key components in exact order
+  const keyComponents = [
+    'v3', // Version prefix
+    fetchCacheKeyPrefix || '',
+    url,
+    request.method,
+    headers,
+    request.mode || '',
+    request.redirect || '',
+    request.credentials || '',
+    request.referrer || '',
+    request.referrerPolicy || '',
+    request.integrity || '',
+    request.cache || '',
+    bodyChunks
+  ];
+  
+  // Generate hash
+  const jsonString = JSON.stringify(keyComponents);
+  return sha256(jsonString);
 }
 
 /**
@@ -146,12 +274,7 @@ export async function cachedFetch(
   }
   
   // Generate cache key
-  const cacheKey = generateCacheKey({
-    url,
-    method,
-    headers: init?.headers,
-    body: init?.body,
-  });
+  const cacheKey = await generateCacheKey(input, cleanFetchOptions(init), init?.next?.fetchCacheKeyPrefix);
   
   // Get Vercel Runtime Cache instance
   const cache = getCache();

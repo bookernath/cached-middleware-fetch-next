@@ -49,5 +49,19 @@ async function example4() {
   console.log('Posted data:', data);
 }
 
+// Example 5: With custom cache key prefix
+async function example5() {
+  console.log('\nExample 5: Custom cache key prefix');
+  const tenantId = 'tenant-123';
+  const response = await cachedFetch('https://jsonplaceholder.typicode.com/posts/5', {
+    next: { 
+      revalidate: 60,
+      fetchCacheKeyPrefix: `tenant-${tenantId}`
+    }
+  });
+  const data = await response.json();
+  console.log('Fetched data with tenant prefix:', data);
+}
+
 console.log('Note: These examples will only work in a Vercel environment where getCache is available.');
 console.log('In other environments, the package will fallback to regular fetch.\n');

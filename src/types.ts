@@ -26,6 +26,11 @@ export interface CachedFetchOptions extends Omit<RequestInit, 'cache'> {
      * Set cache tags for on-demand revalidation
      */
     tags?: string[];
+    
+    /**
+     * Optional prefix for cache key generation
+     */
+    fetchCacheKeyPrefix?: string;
   };
 }
 
@@ -42,12 +47,4 @@ export interface CacheEntry {
   tags?: string[];
 }
 
-/**
- * Options for cache key generation
- */
-export interface CacheKeyOptions {
-  url: string;
-  method?: string;
-  headers?: HeadersInit;
-  body?: BodyInit | null;
-}
+

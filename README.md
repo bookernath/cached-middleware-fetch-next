@@ -75,6 +75,14 @@ const response4 = await cachedFetch('https://api.example.com/data', {
 const response5 = await cachedFetch('https://api.example.com/data', {
   next: { tags: ['api-data', 'products'] }
 });
+
+// Use custom cache key prefix for multi-tenant scenarios
+const response6 = await cachedFetch('https://api.example.com/data', {
+  next: { 
+    revalidate: 300,
+    fetchCacheKeyPrefix: `tenant-${tenantId}` 
+  }
+});
 ```
 
 ### Real-World Example: Route Resolution in Middleware
@@ -163,7 +171,12 @@ interface CachedFetchOptions extends RequestInit {
 
 ## How It Works
 
-1. **Cache Key Generation**: Creates unique cache keys based on URL, method, relevant headers, and request body
+1. **Cache Key Generation**: Generates cache keys exactly matching Next.js's behavior:
+   - Uses "v3" version prefix for compatibility
+   - Creates SHA-256 hash of request components
+   - Includes URL, method, headers, body, and all request options
+   - Automatically removes 'traceparent' and 'tracestate' headers to prevent cache fragmentation
+   - Supports custom cache key prefixes via `next.fetchCacheKeyPrefix`
 2. **Runtime Cache**: Uses Vercel's Runtime Cache (`@vercel/functions`) for storage
 3. **Automatic Expiry**: Honors revalidation times and checks cache validity
 4. **Graceful Degradation**: Falls back to regular fetch if cache operations fail
