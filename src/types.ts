@@ -55,6 +55,9 @@ export interface CacheEntry {
   revalidateAfter?: number; // Timestamp when revalidation should occur
   expiresAt?: number; // Timestamp when cache entry expires
   tags?: string[];
+  // Binary metadata for safe replay
+  isBinary?: boolean;
+  contentType?: string;
 }
 
 

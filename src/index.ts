@@ -97,24 +97,27 @@ function processHeadersForCacheKey(headers: HeadersInit | undefined): Record<str
   
   if (headers instanceof Headers) {
     headers.forEach((value, key) => {
+      const lowerKey = key.toLowerCase();
       // Skip trace context headers
-      if (key.toLowerCase() !== 'traceparent' && key.toLowerCase() !== 'tracestate') {
-        headerObj[key] = value;
+      if (lowerKey !== 'traceparent' && lowerKey !== 'tracestate') {
+        headerObj[lowerKey] = value;
       }
     });
   } else if (Array.isArray(headers)) {
     headers.forEach(([key, value]) => {
+      const lowerKey = key.toLowerCase();
       // Skip trace context headers
-      if (key.toLowerCase() !== 'traceparent' && key.toLowerCase() !== 'tracestate') {
-        headerObj[key] = value;
+      if (lowerKey !== 'traceparent' && lowerKey !== 'tracestate') {
+        headerObj[lowerKey] = value;
       }
     });
   } else {
     // Plain object
     Object.entries(headers).forEach(([key, value]) => {
+      const lowerKey = key.toLowerCase();
       // Skip trace context headers
-      if (key.toLowerCase() !== 'traceparent' && key.toLowerCase() !== 'tracestate') {
-        headerObj[key] = value;
+      if (lowerKey !== 'traceparent' && lowerKey !== 'tracestate') {
+        headerObj[lowerKey] = value as string;
       }
     });
   }
@@ -137,8 +140,8 @@ async function sha256(message: string): Promise<string> {
   
   // Node.js runtime
   // @ts-ignore - crypto module is available in Node.js
-  const nodeCrypto = await import('crypto');
-  return nodeCrypto.createHash('sha256').update(message).digest('hex');
+  const { createHash } = await import('crypto');
+  return createHash('sha256').update(message).digest('hex');
 }
 
 /**
@@ -147,14 +150,15 @@ async function sha256(message: string): Promise<string> {
 async function generateCacheKey(
   input: RequestInfo | URL,
   init?: RequestInit,
-  fetchCacheKeyPrefix?: string
+  fetchCacheKeyPrefix?: string,
+  preprocessedBodyChunks?: any[]
 ): Promise<string> {
   // Extract URL and create Request object for consistent processing
   const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
   const request = new Request(url, init);
   
   // Process body
-  const { chunks: bodyChunks } = await processBodyForCacheKey(init?.body);
+  const bodyChunks = preprocessedBodyChunks ?? (await processBodyForCacheKey(init?.body)).chunks;
   
   // Process headers (removing trace context headers)
   const headers = processHeadersForCacheKey(init?.headers);
@@ -211,10 +215,21 @@ function needsRevalidation(entry: CacheEntry): boolean {
 async function responseToCache(response: Response, options?: CachedFetchOptions): Promise<CacheEntry> {
   const headers: Record<string, string> = {};
   response.headers.forEach((value, key) => {
-    headers[key] = value;
+    headers[key.toLowerCase()] = value;
   });
   
-  const data = await response.text();
+  const contentType = response.headers.get('content-type') || '';
+  const shouldTreatAsText = /^(text\/|application\/(json|javascript|xml|x-www-form-urlencoded)|image\/svg\+xml)/i.test(contentType);
+  let data: string;
+  let isBinary = false;
+  if (shouldTreatAsText) {
+    data = await response.text();
+  } else {
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    data = toBase64(bytes);
+    isBinary = true;
+  }
   const now = Date.now();
   
   // Calculate revalidation and expiry times
@@ -249,6 +264,8 @@ async function responseToCache(response: Response, options?: CachedFetchOptions)
     revalidateAfter,
     expiresAt,
     tags: options?.next?.tags,
+    isBinary,
+    contentType: contentType || undefined,
   };
 }
 
@@ -256,10 +273,23 @@ async function responseToCache(response: Response, options?: CachedFetchOptions)
  * Convert a cache entry back to a Response object
  */
 function cacheToResponse(entry: CacheEntry): Response {
-  return new Response(entry.data, {
+  const headers = new Headers(entry.headers);
+  headers.delete('content-length');
+  if (entry.contentType && !headers.get('content-type')) {
+    headers.set('content-type', entry.contentType);
+  }
+  let body: BodyInit | null = null;
+  if ((entry as any).isBinary) {
+    const bytes = fromBase64(entry.data as string);
+    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as unknown as ArrayBuffer;
+    body = ab;
+  } else {
+    body = entry.data as string;
+  }
+  return new Response(body, {
     status: entry.status,
     statusText: entry.statusText,
-    headers: entry.headers,
+    headers,
   });
 }
 
@@ -284,6 +314,42 @@ function cleanFetchOptions(options?: CachedFetchOptions): RequestInit | undefine
   return cleanOptions;
 }
 
+function toBase64(bytes: Uint8Array): string {
+  // @ts-ignore - Buffer may be available in Node runtime
+  if (typeof Buffer !== 'undefined') {
+    // @ts-ignore
+    return Buffer.from(bytes).toString('base64');
+  }
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  // @ts-ignore - btoa available in Edge/Web runtimes
+  return btoa(binary);
+}
+
+function fromBase64(b64: string): Uint8Array {
+  // @ts-ignore - Buffer may be available in Node runtime
+  if (typeof Buffer !== 'undefined') {
+    // @ts-ignore
+    return new Uint8Array(Buffer.from(b64, 'base64'));
+  }
+  // @ts-ignore - atob available in Edge/Web runtimes
+  const binary = atob(b64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function computeTTL(expiresAt?: number): number {
+  if (!expiresAt) return 86400;
+  const ttl = Math.floor((expiresAt - Date.now()) / 1000);
+  return Math.max(60, ttl);
+}
+
 /**
  * A fetch wrapper that uses Vercel Runtime Cache for caching
  * Mimics Next.js Data Cache API for use in edge middleware
@@ -293,7 +359,9 @@ export async function cachedFetch(
   init?: CachedFetchOptions
 ): Promise<Response> {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-  const method = init?.method || 'GET';
+  const cleanOptions = cleanFetchOptions(init) || {};
+  const method = (cleanOptions.method ? String(cleanOptions.method) : 'GET').toUpperCase();
+  cleanOptions.method = method;
   
   // Determine cache behavior
   const cacheOption = init?.cache || 'auto no cache';
@@ -301,11 +369,15 @@ export async function cachedFetch(
   
   // Skip cache for no-store or revalidate: 0
   if (cacheOption === 'no-store' || revalidate === 0) {
-    return fetch(input, cleanFetchOptions(init));
+    return fetch(input, cleanOptions);
   }
   
   // Generate cache key
-  const cacheKey = await generateCacheKey(input, cleanFetchOptions(init), init?.next?.fetchCacheKeyPrefix);
+  const { chunks: bodyChunks, ogBody } = await processBodyForCacheKey(init?.body);
+  if (ogBody !== undefined) {
+    cleanOptions.body = ogBody;
+  }
+  const cacheKey = await generateCacheKey(input, cleanOptions, init?.next?.fetchCacheKeyPrefix, bodyChunks);
   
   // Get Vercel Runtime Cache instance
   const cache = getCache();
@@ -315,19 +387,23 @@ export async function cachedFetch(
     if (cacheOption === 'force-cache' || cacheOption === 'auto no cache') {
       const cachedEntry = await cache.get(cacheKey) as CacheEntry | undefined;
       
-      if (cachedEntry && !isCacheEntryExpired(cachedEntry)) {
+      if (
+        cachedEntry &&
+        typeof cachedEntry.status === 'number' &&
+        cachedEntry.data !== undefined &&
+        cachedEntry.headers &&
+        !isCacheEntryExpired(cachedEntry)
+      ) {
         // Check if we need to revalidate in the background
         if (needsRevalidation(cachedEntry)) {
           // Return stale data immediately and refresh in background (SWR)
           const backgroundRefresh = async () => {
             try {
-              const freshResponse = await fetch(input, cleanFetchOptions(init));
+              const freshResponse = await fetch(input, cleanOptions);
               
               if (freshResponse.ok && (method === 'GET' || method === 'POST' || method === 'PUT')) {
                 const freshCacheEntry = await responseToCache(freshResponse.clone(), init);
-                const cacheTTL = freshCacheEntry.expiresAt 
-                  ? Math.floor((freshCacheEntry.expiresAt - Date.now()) / 1000)
-                  : 86400; // Default 24 hours
+                const cacheTTL = computeTTL(freshCacheEntry.expiresAt);
                 await cache.set(cacheKey, freshCacheEntry, { ttl: cacheTTL });
               }
             } catch (error) {
@@ -350,16 +426,14 @@ export async function cachedFetch(
     }
     
     // Fetch from origin (cache miss or expired)
-    const response = await fetch(input, cleanFetchOptions(init));
+    const response = await fetch(input, cleanOptions);
     
     // Only cache successful responses (2xx) and GET/POST/PUT requests
     if (response.ok && (method === 'GET' || method === 'POST' || method === 'PUT')) {
       const cacheEntry = await responseToCache(response.clone(), init);
       
       // Store in cache with appropriate TTL
-      const cacheTTL = cacheEntry.expiresAt 
-        ? Math.floor((cacheEntry.expiresAt - Date.now()) / 1000)
-        : 86400; // Default 24 hours
+      const cacheTTL = computeTTL(cacheEntry.expiresAt);
       
       cache.set(cacheKey, cacheEntry, { ttl: cacheTTL }).catch((error: unknown) => {
         console.error('[cached-middleware-fetch] Failed to cache response:', error);
@@ -370,7 +444,7 @@ export async function cachedFetch(
   } catch (error) {
     // If cache operations fail, fallback to regular fetch
     console.error('[cached-middleware-fetch] Cache operation failed:', error);
-    return fetch(input, cleanFetchOptions(init));
+    return fetch(input, cleanOptions);
   }
 }
 

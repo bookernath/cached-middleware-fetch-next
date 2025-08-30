@@ -231,7 +231,9 @@ interface CachedFetchOptions extends RequestInit {
   cache?: 'auto no cache' | 'no-store' | 'force-cache';
   next?: {
     revalidate?: false | 0 | number;
+    expires?: number; // absolute expiry in seconds (must be > revalidate)
     tags?: string[];
+    fetchCacheKeyPrefix?: string;
   };
 }
 ```
@@ -284,6 +286,11 @@ interface CachedFetchOptions extends RequestInit {
 - Next.js 14.0.0 or later
 - @vercel/functions 1.4.0 or later
 - Deployed on Vercel (Runtime Cache is a Vercel feature)
+
+## Environment behavior
+
+- On Vercel Edge (middleware/edge routes): uses Runtime Cache for persistence and SWR background refresh via `waitUntil()`.
+- Outside Vercel (e.g., local dev or Node runtimes without `@vercel/functions` available): falls back to native `fetch` behavior without caching.
 
 ## Edge Runtime Compatibility
 

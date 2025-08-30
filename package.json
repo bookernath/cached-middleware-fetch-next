@@ -30,7 +30,11 @@
     "vercel",
     "runtime-cache"
   ],
-  "author": "",
+  "homepage": "https://github.com/bookernath/cached-middleware-fetch-next#readme",
+  "bugs": {
+    "url": "https://github.com/bookernath/cached-middleware-fetch-next/issues"
+  },
+  "sideEffects": false,
   "license": "MIT",
   "repository": {
     "type": "git",
