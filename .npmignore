@@ -1,0 +1,23 @@
+# Source files
+src/
+tsconfig.json
+tsup.config.ts
+
+# Development files
+example.ts
+test-example.js
+*.test.ts
+
+# Config files
+.gitignore
+.prettierrc
+
+# Build artifacts
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store

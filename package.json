@@ -1,0 +1,46 @@
+{
+  "name": "cached-middleware-fetch-next",
+  "version": "0.1.0",
+  "description": "A Next.js fetch wrapper for edge middleware that uses Vercel Runtime Cache as its caching backend",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "nextjs",
+    "fetch",
+    "cache",
+    "middleware",
+    "edge",
+    "vercel",
+    "runtime-cache"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "@vercel/functions": ">=1.4.0",
+    "next": ">=14.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@vercel/functions": "^1.4.1",
+    "next": "^15.0.0",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
