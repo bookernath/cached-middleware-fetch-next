@@ -284,7 +284,7 @@ interface CachedFetchOptions extends RequestInit {
 ## Requirements
 
 - Next.js 14.0.0 or later
-- @vercel/functions 1.4.0 or later
+- @vercel/functions 2.2.13 or later
 - Deployed on Vercel (Runtime Cache is a Vercel feature)
 
 ## Environment behavior
@@ -294,11 +294,7 @@ interface CachedFetchOptions extends RequestInit {
 
 ## Edge Runtime Compatibility
 
-This package is designed specifically for the Edge Runtime and works in:
-
-- Next.js Middleware
-- Edge Route Handlers
-- Edge API Routes
+This package is designed specifically for the Edge Runtime and works in Next.js Middleware using either Edge or Node.js runtime.
 
 ## Limitations
 
