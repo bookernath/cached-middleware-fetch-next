@@ -32,6 +32,10 @@
   ],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bookernath/cached-middleware-fetch-next"
+  },
   "peerDependencies": {
     "@vercel/functions": ">=2.2.13",
     "next": ">=14.0.0"
