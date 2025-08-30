@@ -13,7 +13,13 @@
     "dev": "tsup --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "release:patch": "npm version patch && git push origin main --tags",
+    "release:minor": "npm version minor && git push origin main --tags",
+    "release:major": "npm version major && git push origin main --tags",
+    "release:prerelease": "npm version prerelease && git push origin main --tags",
+    "test": "npm run type-check && npm run build",
+    "test:package": "npm pack --dry-run"
   },
   "keywords": [
     "nextjs",

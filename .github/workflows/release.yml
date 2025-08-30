@@ -1,0 +1,253 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - prerelease
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # First, run tests and checks
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Build
+        run: npm run build
+
+      - name: Test build artifacts
+        run: |
+          # Verify dist files exist
+          test -f dist/index.js
+          test -f dist/index.mjs
+          test -f dist/index.d.ts
+          # Verify package can be imported
+          node -e "require('./dist/index.js')"
+          node -e "import('./dist/index.mjs')"
+
+  # Determine if we should release
+  should-release:
+    name: Should Release?
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      should-release: ${{ steps.check.outputs.should-release }}
+      current-version: ${{ steps.check.outputs.current-version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if should release
+        id: check
+        run: |
+          # Get current version from package.json
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          echo "current-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          
+          # Check if this is a manual workflow dispatch
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should-release=true" >> $GITHUB_OUTPUT
+            echo "Manual release triggered"
+            exit 0
+          fi
+          
+          # For push events, check if package.json version changed
+          if git diff HEAD~1 HEAD --name-only | grep -q "package.json"; then
+            # Check if version field changed
+            OLD_VERSION=$(git show HEAD~1:package.json | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin', 'utf8')).version")
+            if [ "$OLD_VERSION" != "$CURRENT_VERSION" ]; then
+              echo "should-release=true" >> $GITHUB_OUTPUT
+              echo "Version changed from $OLD_VERSION to $CURRENT_VERSION"
+            else
+              echo "should-release=false" >> $GITHUB_OUTPUT
+              echo "No version change detected"
+            fi
+          else
+            echo "should-release=false" >> $GITHUB_OUTPUT
+            echo "package.json not modified"
+          fi
+
+  # Release job
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: [test, should-release]
+    if: needs.should-release.outputs.should-release == 'true'
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Bump version (manual release only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          npm version ${{ github.event.inputs.release_type }} --no-git-tag-version
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+      - name: Set version for automatic release
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          NEW_VERSION="${{ needs.should-release.outputs.current-version }}"
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+      - name: Build package
+        run: npm run build
+
+      - name: Run package tests
+        run: |
+          # Test that the built package works
+          npm pack --dry-run
+          
+          # Verify package contents
+          echo "Package contents:"
+          npm pack --dry-run 2>/dev/null | tail -n +2
+
+      - name: Commit version bump (manual release only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git add package.json package-lock.json
+          git commit -m "chore: bump version to v$NEW_VERSION" || echo "No changes to commit"
+          git push origin ${{ github.ref_name }}
+
+      - name: Create Git tag
+        run: |
+          git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION"
+          git push origin "v$NEW_VERSION"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get commits since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            CHANGELOG=$(git log $LAST_TAG..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges -10)
+          fi
+          
+          # Save changelog to file and output
+          echo "$CHANGELOG" > CHANGELOG_TEMP.md
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ env.NEW_VERSION }}
+          release_name: Release v${{ env.NEW_VERSION }}
+          body: |
+            ## Changes in v${{ env.NEW_VERSION }}
+            
+            ${{ steps.changelog.outputs.changelog }}
+            
+            ## Installation
+            
+            ```bash
+            npm install cached-middleware-fetch-next@${{ env.NEW_VERSION }}
+            ```
+            
+            ## What's Changed
+            Full Changelog: https://github.com/${{ github.repository }}/compare/${{ github.event.before }}..v${{ env.NEW_VERSION }}
+          draft: false
+          prerelease: ${{ contains(env.NEW_VERSION, '-') }}
+
+      - name: Publish to NPM
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # Verify we're about to publish the right version
+          echo "Publishing version: $NEW_VERSION"
+          echo "Package name: $(node -p "require('./package.json').name")"
+          
+          # Check if this version already exists on NPM
+          if npm view cached-middleware-fetch-next@$NEW_VERSION version 2>/dev/null; then
+            echo "Version $NEW_VERSION already exists on NPM, skipping publish"
+            exit 0
+          fi
+          
+          # Publish to NPM
+          if [[ "$NEW_VERSION" == *"-"* ]]; then
+            echo "Publishing prerelease version with --tag next"
+            npm publish --tag next --provenance
+          else
+            echo "Publishing stable version"
+            npm publish --provenance
+          fi
+
+      - name: Update package-lock.json (if needed)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          # Ensure package-lock.json is updated with new version
+          npm install --package-lock-only
+          if git diff --quiet package-lock.json; then
+            echo "No package-lock.json changes needed"
+          else
+            git add package-lock.json
+            git commit -m "chore: update package-lock.json for v$NEW_VERSION"
+            git push origin ${{ github.ref_name }}
+          fi
+
+      - name: Post-release notification
+        run: |
+          echo "✅ Successfully released v$NEW_VERSION"
+          echo "📦 Package: https://www.npmjs.com/package/cached-middleware-fetch-next/v/$NEW_VERSION"
+          echo "🏷️ Release: https://github.com/${{ github.repository }}/releases/tag/v$NEW_VERSION"
