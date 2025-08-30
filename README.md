@@ -2,7 +2,8 @@
 
 A Next.js fetch wrapper for edge middleware that uses Vercel Runtime Cache as its caching backend. This package provides a drop-in replacement for the native fetch API that mimics Next.js's Data Cache behavior in edge middleware environments where the standard Data Cache is not available.
 
-[![DeepWiki](https://deepwiki.io/badge/bookernath/cached-middleware-fetch-next.svg)](https://deepwiki.io/bookernath/cached-middleware-fetch-next)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/bookernath/cached-middleware-fetch-next)
+
 
 ## Installation
 
