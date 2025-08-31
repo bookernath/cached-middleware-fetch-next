@@ -165,7 +165,7 @@ async function generateCacheKey(
   
   // Build cache key components in exact order
   const keyComponents = [
-    'v3', // Version prefix
+    'v1', // Version prefix
     fetchCacheKeyPrefix || '',
     url,
     request.method,
