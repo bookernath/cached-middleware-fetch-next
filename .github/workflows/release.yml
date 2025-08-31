@@ -188,27 +188,36 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: v${{ env.NEW_VERSION }}
-          release_name: Release v${{ env.NEW_VERSION }}
-          body: |
-            ## Changes in v${{ env.NEW_VERSION }}
-            
-            ${{ steps.changelog.outputs.changelog }}
-            
-            ## Installation
-            
-            ```bash
-            npm install cached-middleware-fetch-next@${{ env.NEW_VERSION }}
-            ```
-            
-            ## What's Changed
-            Full Changelog: https://github.com/${{ github.repository }}/compare/${{ github.event.before }}..v${{ env.NEW_VERSION }}
-          draft: false
-          prerelease: ${{ contains(env.NEW_VERSION, '-') }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create release notes
+          cat > release_notes.md << 'EOF'
+          ## Changes in v${{ env.NEW_VERSION }}
+          
+          ${{ steps.changelog.outputs.changelog }}
+          
+          ## Installation
+          
+          ```bash
+          npm install cached-middleware-fetch-next@${{ env.NEW_VERSION }}
+          ```
+          
+          ## What's Changed
+          Full Changelog: https://github.com/${{ github.repository }}/compare/${{ github.event.before }}..v${{ env.NEW_VERSION }}
+          EOF
+          
+          # Create the release
+          if [[ "${{ env.NEW_VERSION }}" == *"-"* ]]; then
+            gh release create "v${{ env.NEW_VERSION }}" \
+              --title "Release v${{ env.NEW_VERSION }}" \
+              --notes-file release_notes.md \
+              --prerelease
+          else
+            gh release create "v${{ env.NEW_VERSION }}" \
+              --title "Release v${{ env.NEW_VERSION }}" \
+              --notes-file release_notes.md
+          fi
 
       - name: Publish to NPM
         env:
