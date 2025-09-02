@@ -6,6 +6,15 @@ import type { CachedFetchOptions, CacheEntry } from './types';
 export type { CachedFetchOptions, CacheEntry } from './types';
 
 /**
+ * Verbose logger that only logs when CACHED_MIDDLEWARE_FETCH_LOGGER=1
+ */
+function verboseLog(...args: any[]): void {
+  if (process.env.CACHED_MIDDLEWARE_FETCH_LOGGER === '1') {
+    console.log('[cached-middleware-fetch]', ...args);
+  }
+}
+
+/**
  * Process body for cache key generation, matching Next.js behavior
  * Note: The body is consumed here for cache key generation only.
  * The original body is preserved for the actual fetch request.
@@ -379,8 +388,17 @@ export async function cachedFetch(
   const cacheOption = init?.cache || 'auto no cache';
   const revalidate = init?.next?.revalidate;
   
+  verboseLog(`Starting cachedFetch: ${method} ${url}`, {
+    cacheOption,
+    revalidate,
+    expires: init?.next?.expires,
+    tags: init?.next?.tags,
+    fetchCacheKeyPrefix: init?.next?.fetchCacheKeyPrefix
+  });
+  
   // Skip cache for no-store or revalidate: 0
   if (cacheOption === 'no-store' || revalidate === 0) {
+    verboseLog(`Skipping cache due to ${cacheOption === 'no-store' ? 'no-store' : 'revalidate: 0'}`);
     const response = await fetch(input, cleanOptions);
     
     // Clone the response to avoid body consumption issues
@@ -395,6 +413,7 @@ export async function cachedFetch(
     responseWithCacheHeaders.headers.set('X-Cache-Status', 'MISS');
     responseWithCacheHeaders.headers.set('X-Cache-Age', '0');
     
+    verboseLog(`Response: ${response.status} ${response.statusText} (cache bypassed)`);
     return responseWithCacheHeaders;
   }
   
@@ -405,12 +424,15 @@ export async function cachedFetch(
   }
   const cacheKey = await generateCacheKey(input, cleanOptions, init?.next?.fetchCacheKeyPrefix, bodyChunks);
   
+  verboseLog(`Generated cache key: ${cacheKey}`);
+  
   // Get Vercel Runtime Cache instance
   const cache = getCache();
   
   try {
     // Try to get from cache first
     if (cacheOption === 'force-cache' || cacheOption === 'auto no cache') {
+      verboseLog(`Looking up cache entry for key: ${cacheKey}`);
       const cachedEntry = await cache.get(cacheKey) as CacheEntry | undefined;
       
       if (
@@ -420,18 +442,27 @@ export async function cachedFetch(
         cachedEntry.headers &&
         !isCacheEntryExpired(cachedEntry)
       ) {
+        const now = Date.now();
+        const cacheAge = Math.floor((now - cachedEntry.timestamp) / 1000);
+        const expiresIn = cachedEntry.expiresAt ? Math.floor((cachedEntry.expiresAt - now) / 1000) : 'never';
+        
         // Check if we need to revalidate in the background
         const isStale = needsRevalidation(cachedEntry);
         if (isStale) {
+          verboseLog(`Cache STALE (age: ${cacheAge}s, expires in: ${expiresIn}s) - triggering background refresh`);
           // Return stale data immediately and refresh in background (SWR)
           const backgroundRefresh = async () => {
             try {
+              verboseLog(`Background refresh started for: ${url}`);
               const freshResponse = await fetch(input, cleanOptions);
               
               if (freshResponse.ok && (method === 'GET' || method === 'POST' || method === 'PUT')) {
                 const freshCacheEntry = await responseToCache(freshResponse.clone(), init);
                 const cacheTTL = computeTTL(freshCacheEntry.expiresAt);
                 await cache.set(cacheKey, freshCacheEntry, { ttl: cacheTTL });
+                verboseLog(`Background refresh completed and cached (TTL: ${cacheTTL}s)`);
+              } else {
+                verboseLog(`Background refresh completed but not cached (status: ${freshResponse.status}, method: ${method})`);
               }
             } catch (error) {
               console.error('[cached-middleware-fetch] Background refresh failed:', error);
@@ -441,23 +472,40 @@ export async function cachedFetch(
           // Use waitUntil to extend the lifetime of the request for background refresh
           if (typeof waitUntil === 'function') {
             waitUntil(backgroundRefresh());
+            verboseLog(`Background refresh scheduled with waitUntil`);
           } else {
             // Fallback if waitUntil is not available (non-Vercel environment)
             backgroundRefresh().catch(() => {});
+            verboseLog(`Background refresh scheduled as fire-and-forget (no waitUntil available)`);
           }
+        } else {
+          verboseLog(`Cache HIT (age: ${cacheAge}s, expires in: ${expiresIn}s)`);
         }
         
         // Return cached response with appropriate cache status
         return cacheToResponse(cachedEntry, isStale ? 'STALE' : 'HIT');
+      } else {
+        if (!cachedEntry) {
+          verboseLog(`Cache MISS - no entry found`);
+        } else if (isCacheEntryExpired(cachedEntry)) {
+          verboseLog(`Cache MISS - entry expired`);
+        } else {
+          verboseLog(`Cache MISS - entry invalid`);
+        }
       }
+    } else {
+      verboseLog(`Skipping cache lookup due to cache option: ${cacheOption}`);
     }
     
     // Fetch from origin (cache miss or expired)
+    verboseLog(`Fetching from origin: ${method} ${url}`);
     const response = await fetch(input, cleanOptions);
     
     // Clone the response first to avoid body consumption issues
     const responseForCaching = response.clone();
     const responseForReturn = response.clone();
+    
+    verboseLog(`Origin response: ${response.status} ${response.statusText}`);
     
     // Add cache status headers to indicate this was a miss
     const responseWithCacheHeaders = new Response(responseForReturn.body, {
@@ -470,24 +518,31 @@ export async function cachedFetch(
     
     // Only cache successful responses (2xx) and GET/POST/PUT requests
     if (response.ok && (method === 'GET' || method === 'POST' || method === 'PUT')) {
+      verboseLog(`Caching response (status: ${response.status}, method: ${method})`);
       const cacheEntry = await responseToCache(responseForCaching, init);
       
       // Store in cache with appropriate TTL
       const cacheTTL = computeTTL(cacheEntry.expiresAt);
+      verboseLog(`Storing in cache with TTL: ${cacheTTL}s, expires at: ${cacheEntry.expiresAt ? new Date(cacheEntry.expiresAt).toISOString() : 'never'}`);
       
       cache.set(cacheKey, cacheEntry, { ttl: cacheTTL }).catch((error: unknown) => {
         console.error('[cached-middleware-fetch] Failed to cache response:', error);
       });
+    } else {
+      verboseLog(`Not caching response (status: ${response.status}, method: ${method}, ok: ${response.ok})`);
     }
     
     return responseWithCacheHeaders;
   } catch (error) {
     // If cache operations fail, fallback to regular fetch
     console.error('[cached-middleware-fetch] Cache operation failed:', error);
+    verboseLog(`Falling back to regular fetch due to cache error`);
     const fallbackResponse = await fetch(input, cleanOptions);
     
     // Clone the response to avoid body consumption issues
     const fallbackResponseClone = fallbackResponse.clone();
+    
+    verboseLog(`Fallback response: ${fallbackResponse.status} ${fallbackResponse.statusText}`);
     
     // Add cache status headers to indicate this was a miss due to error
     const responseWithCacheHeaders = new Response(fallbackResponseClone.body, {
