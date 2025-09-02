@@ -265,6 +265,46 @@ const response = await fetch('https://api.example.com/data', {
 });
 ```
 
+## Debugging and Verbose Logging
+
+Enable detailed logging to understand caching behavior and troubleshoot issues by setting the `CACHED_MIDDLEWARE_FETCH_LOGGER` environment variable:
+
+```bash
+export CACHED_MIDDLEWARE_FETCH_LOGGER=1
+```
+
+When enabled, you'll see detailed logs for all caching operations:
+
+```typescript
+// With verbose logging enabled
+const response = await cachedFetch('https://api.example.com/data', {
+  next: { revalidate: 300, tags: ['api-data'] }
+});
+
+// Console output:
+// [cached-middleware-fetch] Starting cachedFetch: GET https://api.example.com/data {
+//   cacheOption: 'auto no cache',
+//   revalidate: 300,
+//   expires: undefined,
+//   tags: ['api-data'],
+//   fetchCacheKeyPrefix: undefined
+// }
+// [cached-middleware-fetch] Generated cache key: a1b2c3d4e5f6...
+// [cached-middleware-fetch] Cache HIT (age: 45s, expires in: 255s)
+```
+
+**Logged Information:**
+- Request details (method, URL, cache options)
+- Cache key generation
+- Cache lookup results (HIT/MISS/STALE with timing)
+- Background refresh operations (SWR)
+- Cache storage operations with TTL
+- Fallback scenarios
+
+**Environment Variable Values:**
+- `CACHED_MIDDLEWARE_FETCH_LOGGER=1` - Enable verbose logging
+- `CACHED_MIDDLEWARE_FETCH_LOGGER=0` or unset - Disable verbose logging (default)
+
 ## API Reference
 
 ### `cachedFetch(input, init?)`
