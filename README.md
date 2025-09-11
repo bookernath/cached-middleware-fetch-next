@@ -363,7 +363,6 @@ interface CachedFetchOptions extends RequestInit {
 ## How It Works
 
 1. **Cache Key Generation**: Generates cache keys exactly matching Next.js's behavior:
-   - Uses "v3" version prefix for compatibility
    - Creates SHA-256 hash of request components
    - Includes URL, method, headers, body, and all request options
    - Automatically removes 'traceparent' and 'tracestate' headers to prevent cache fragmentation
