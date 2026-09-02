@@ -329,7 +329,7 @@ const response = await cachedFetch('https://api.example.com/data', {
 - `CACHED_MIDDLEWARE_FETCH_LOGGER=1` - Enable verbose logging
 - `CACHED_MIDDLEWARE_FETCH_LOGGER=0` or unset - Disable verbose logging (default)
 
-Cache entries are also named `"<METHOD> <url>"` in Runtime Cache, so they are easy to find in Vercel's observability tooling.
+Cache entries are also named `"<METHOD> <origin><pathname>"` in Runtime Cache, so they are easy to find in Vercel's observability tooling. The query string and fragment are deliberately excluded from the name so tokens or API keys in the URL are never shown in plaintext; they still contribute to the (hashed) cache key.
 
 ## API Reference
 

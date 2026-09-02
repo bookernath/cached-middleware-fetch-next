@@ -22,6 +22,33 @@ function resolveAfter(): Promise<AfterFn | undefined> {
   }
   return afterFnPromise;
 }
+// Warm the lookup at module load so the first STALE response does not wait on it
+void resolveAfter();
+
+/**
+ * Human-readable name for a Runtime Cache entry (shown in Vercel observability).
+ * The query string and fragment are stripped so API keys or signed tokens in
+ * the URL never appear in plaintext in the dashboard.
+ */
+function cacheEntryName(method: string, url: string): string {
+  try {
+    const u = new URL(url);
+    return `${method} ${u.origin}${u.pathname}`;
+  } catch {
+    return `${method} ${url.split(/[?#]/)[0]}`;
+  }
+}
+
+/**
+ * Options for Runtime Cache set(): omit `tags` entirely when none were given
+ */
+function cacheSetOptions(entry: CacheEntry, ttl: number, method: string, url: string) {
+  return {
+    ttl,
+    name: cacheEntryName(method, url),
+    ...(entry.tags && entry.tags.length > 0 ? { tags: entry.tags } : {}),
+  };
+}
 
 /**
  * Schedule a background task without blocking the response.
@@ -524,11 +551,7 @@ export async function cachedFetch(
               if (freshResponse.ok && (method === 'GET' || method === 'POST' || method === 'PUT')) {
                 const freshCacheEntry = await responseToCache(freshResponse.clone(), init);
                 const cacheTTL = computeTTL(freshCacheEntry.expiresAt);
-                await cache.set(cacheKey, freshCacheEntry, {
-                  ttl: cacheTTL,
-                  tags: freshCacheEntry.tags,
-                  name: `${method} ${url}`,
-                });
+                await cache.set(cacheKey, freshCacheEntry, cacheSetOptions(freshCacheEntry, cacheTTL, method, url));
                 verboseLog(`Background refresh completed and cached (TTL: ${cacheTTL}s)`);
               } else {
                 verboseLog(`Background refresh completed but not cached (status: ${freshResponse.status}, method: ${method})`);
@@ -587,11 +610,7 @@ export async function cachedFetch(
       const cacheTTL = computeTTL(cacheEntry.expiresAt);
       verboseLog(`Storing in cache with TTL: ${cacheTTL}s, expires at: ${cacheEntry.expiresAt ? new Date(cacheEntry.expiresAt).toISOString() : 'never'}`);
       
-      cache.set(cacheKey, cacheEntry, {
-        ttl: cacheTTL,
-        tags: cacheEntry.tags,
-        name: `${method} ${url}`,
-      }).catch((error: unknown) => {
+      cache.set(cacheKey, cacheEntry, cacheSetOptions(cacheEntry, cacheTTL, method, url)).catch((error: unknown) => {
         console.error('[cached-middleware-fetch] Failed to cache response:', error);
       });
     } else {
