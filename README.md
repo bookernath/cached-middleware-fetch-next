@@ -1,6 +1,6 @@
 # cached-middleware-fetch-next
 
-A Next.js fetch wrapper for edge middleware that uses Vercel Runtime Cache as its caching backend. This package provides a drop-in replacement for the native fetch API that mimics Next.js's Data Cache behavior in edge middleware environments where the standard Data Cache is not available.
+A Next.js fetch wrapper for `proxy.ts` (formerly `middleware.ts`) that uses Vercel Runtime Cache as its caching backend. It is a drop-in replacement for `fetch` that mimics the Next.js Data Cache API in proxy, where Next's built-in fetch caching has no effect.
 
 [![NPM Version](https://img.shields.io/npm/v/cached-middleware-fetch-next.svg)](https://www.npmjs.com/package/cached-middleware-fetch-next)
 [![Official Website](https://img.shields.io/badge/website-cached--middleware--fetch--next.dev-blue.svg)](https://cached-middleware-fetch-next.dev/)
@@ -25,40 +25,49 @@ The code for the demo can be found here: https://github.com/bookernath/middlewar
 
 ## Why?
 
-This library helps you get around this limitation in Next.js when hosting on Vercel: https://github.com/vercel/next.js/pull/80378/files
+The Next.js docs for [Proxy](https://nextjs.org/docs/app/getting-started/proxy) state:
 
-In Next.js edge middleware, the built-in Data Cache that normally works with `fetch()` is not available. This package solves that problem by providing a fetch wrapper that uses Vercel's Runtime Cache as its backend, allowing you to cache fetch requests in middleware with the same familiar API as Next.js's extended fetch.
+> Using `fetch` with `options.cache`, `options.next.revalidate`, or `options.next.tags`, has no effect in Proxy.
+
+The Data Cache, `unstable_cache`, and `use cache` are likewise unavailable in `proxy.ts`. If you need to call an API on every request (route resolution, feature flags, tenant lookup, redirects from a CMS) you would otherwise hit the origin every time.
+
+This package solves that by wrapping `fetch` with [Vercel Runtime Cache](https://vercel.com/docs/caching/runtime-cache), the regional cache Vercel exposes to functions, routing middleware, and builds, and by adding stale-while-revalidate on top. You keep the familiar `next: { revalidate, tags }` API.
 
 ## Features
 
-- 🚀 Drop-in replacement for fetch in Next.js middleware
-- 💾 Uses Vercel Runtime Cache for persistence
+- 🚀 Drop-in replacement for `fetch` in `proxy.ts`
+- 💾 Uses Vercel Runtime Cache for persistence across invocations
 - 🔄 Supports Next.js fetch options (`cache`, `next.revalidate`, `next.tags`)
-- ⏱️ **SWR (Stale-While-Revalidate)** caching strategy using `waitUntil()`
+- ⏱️ **SWR (Stale-While-Revalidate)** caching using `after()` (or `waitUntil()` as a fallback)
+- 🏷️ **Tag-based expiry** via `expireTag()`, backed by Runtime Cache tags
 - 🎯 Automatic cache key generation (includes body for proper POST/PUT caching)
 - 📊 **GraphQL Support** - Caches POST requests with different queries separately
 - 📈 **Cache Status Headers** - Get detailed cache information via response headers
-- ⚡ Graceful fallback to regular fetch if cache fails
-- 📦 Lightweight with minimal dependencies
+- ⚡ Graceful fallback to regular fetch if cache operations fail
+- 📦 Lightweight with no runtime dependencies beyond `@vercel/functions`
 
 ## Usage
 
 ### Basic Usage
 
-Simply import and use as a replacement for the native fetch:
-
 ```typescript
+// proxy.ts
+import { NextRequest, NextResponse } from 'next/server';
 import { cachedFetch } from 'cached-middleware-fetch-next';
 
-export async function middleware(request: NextRequest) {
-  // This will be cached using Vercel Runtime Cache
-  const response = await cachedFetch('https://api.example.com/data');
+export async function proxy(request: NextRequest) {
+  // Cached in Vercel Runtime Cache
+  const response = await cachedFetch('https://api.example.com/data', {
+    next: { revalidate: 60 },
+  });
   const data = await response.json();
-  
-  // Use the data in your middleware logic
+
+  // Use the data in your routing logic
   return NextResponse.next();
 }
 ```
+
+If you are still on `middleware.ts`, the same code works with `export async function middleware(...)`.
 
 ### Using Next.js Cache Options
 
@@ -87,7 +96,7 @@ const response4 = await cachedFetch('https://api.example.com/data', {
   next: { revalidate: false }
 });
 
-// Cache with tags (for future on-demand revalidation)
+// Cache with tags for on-demand expiry (see "Tag-based Expiry" below)
 const response5 = await cachedFetch('https://api.example.com/data', {
   next: { tags: ['api-data', 'products'] }
 });
@@ -111,11 +120,13 @@ const response7 = await cachedFetch('https://api.example.com/data', {
 
 ### SWR (Stale-While-Revalidate) Caching
 
-This package implements SWR caching behavior using Vercel's `waitUntil()` function:
+Runtime Cache has no built-in stale-while-revalidate, so this package implements it:
 
 1. **Immediate Response**: Always returns cached data immediately if available (even if stale)
 2. **Background Refresh**: If data is stale (past `revalidate` time) but not expired, triggers a background refresh
 3. **Non-blocking**: The user gets the stale data immediately while fresh data is fetched in the background
+
+The background refresh is scheduled with Next's first-party [`after()`](https://nextjs.org/docs/app/api-reference/functions/after) when available (Next 15.1+, supported in proxy), and falls back to `waitUntil()` from `@vercel/functions`, then to fire-and-forget outside Vercel.
 
 ```typescript
 // Example: Product data that updates hourly but can be stale for a day
@@ -125,10 +136,24 @@ const response = await cachedFetch('https://api.example.com/products', {
     expires: 86400     // But keep serving stale data for up to 24 hours
   }
 });
-
-// Users get instant responses, even with stale data
-// Fresh data is fetched in the background when needed
 ```
+
+### Tag-based Expiry
+
+Tags passed via `next.tags` are attached to the underlying Runtime Cache entry. Expire them on demand with `expireTag()`, for example from a Route Handler that receives a CMS webhook:
+
+```typescript
+// app/api/revalidate/route.ts
+import { expireTag } from 'cached-middleware-fetch-next';
+
+export async function POST(request: Request) {
+  const { tag } = await request.json();
+  await expireTag(tag);            // or expireTag(['routes', 'products'])
+  return Response.json({ ok: true });
+}
+```
+
+Expirations propagate to every region within a few hundred milliseconds. Note that Next's `revalidateTag()` and `revalidatePath()` operate on the Data Cache and do **not** affect Runtime Cache entries; use `expireTag()` from this package (or `getCache().expireTag()` from `@vercel/functions`).
 
 ### Cache Status Headers
 
@@ -152,9 +177,9 @@ console.log(`Cache ${cacheStatus}: ${cacheAge}s old, expires in ${expiresIn}s`);
 - **`STALE`**: Cached data served instantly, background refresh triggered  
 - **`MISS`**: No cached data available, fetched from origin
 
-**Example Usage in Middleware:**
+**Example Usage in Proxy:**
 ```typescript
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const response = await cachedFetch('https://api.example.com/data', {
     next: { revalidate: 60 }
   });
@@ -216,15 +241,14 @@ const response2 = await cachedFetch('https://api.example.com/graphql', {
 });
 ```
 
-### Real-World Example: Route Resolution in Middleware
-
-Here's an example of using the package for caching route lookups in middleware:
+### Real-World Example: Route Resolution in Proxy
 
 ```typescript
+// proxy.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { cachedFetch } from 'cached-middleware-fetch-next';
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   
   // Cache route resolution for 30 minutes
@@ -233,7 +257,7 @@ export async function middleware(request: NextRequest) {
     {
       next: { 
         revalidate: 1800, // 30 minutes
-        tags: ['routes']
+        tags: ['routes']  // expireTag('routes') when routes change
       }
     }
   );
@@ -297,13 +321,15 @@ const response = await cachedFetch('https://api.example.com/data', {
 - Request details (method, URL, cache options)
 - Cache key generation
 - Cache lookup results (HIT/MISS/STALE with timing)
-- Background refresh operations (SWR)
+- Background refresh operations (SWR) and which scheduler was used
 - Cache storage operations with TTL
 - Fallback scenarios
 
 **Environment Variable Values:**
 - `CACHED_MIDDLEWARE_FETCH_LOGGER=1` - Enable verbose logging
 - `CACHED_MIDDLEWARE_FETCH_LOGGER=0` or unset - Disable verbose logging (default)
+
+Cache entries are also named `"<METHOD> <origin><pathname>"` in Runtime Cache, so they are easy to find in Vercel's observability tooling. The query string and fragment are deliberately excluded from the name so tokens or API keys in the URL are never shown in plaintext; they still contribute to the (hashed) cache key.
 
 ## API Reference
 
@@ -356,9 +382,12 @@ interface CachedFetchOptions extends RequestInit {
   - If not specified, defaults to 24 hours or 10x the revalidate time, whichever is larger
 
 - `tags`:
-  - `string[]`: Cache tags for manual invalidation
-  - **Note**: Automatic tag-based revalidation is not supported
-  - Tags can be used with Vercel's cache APIs for manual clearing
+  - `string[]`: Runtime Cache tags attached to the entry, for use with `expireTag()`
+
+### `expireTag(tag)`
+
+- `tag`: `string | string[]` - Tag(s) to expire
+- Returns `Promise<void>`. Expires every Runtime Cache entry that was stored with any of the given tags.
 
 ## How It Works
 
@@ -370,11 +399,11 @@ interface CachedFetchOptions extends RequestInit {
 
 2. **SWR Caching Strategy**:
    - Returns cached data immediately, even if stale
-   - Uses `waitUntil()` to refresh stale data in the background
+   - Refreshes stale data in the background via `after()` / `waitUntil()`
    - Separates revalidation time from expiry time for optimal performance
    - Best-effort approach: background refresh won't block the response
 
-3. **Runtime Cache**: Uses Vercel's Runtime Cache (`@vercel/functions`) for storage
+3. **Runtime Cache**: Uses Vercel's Runtime Cache (`getCache()` from `@vercel/functions`) for storage, with `ttl` and `tags` set on every entry
 
 4. **Automatic Expiry**: Honors both revalidation and expiry times
 
@@ -382,26 +411,25 @@ interface CachedFetchOptions extends RequestInit {
 
 ## Requirements
 
-- Next.js 14.0.0 or later
-- @vercel/functions 2.2.13 or later
-- Deployed on Vercel (Runtime Cache is a Vercel feature)
+- Node.js 20 or later
+- Next.js 15.1 or later (`after()` support; Next 16 recommended, where `proxy.ts` runs on the Node.js runtime)
+- `@vercel/functions` 3.0 or later
+- Deployed on Vercel for persistent caching (Runtime Cache is a Vercel feature)
 
 ## Environment behavior
 
-- On Vercel Edge (middleware/edge routes): uses Runtime Cache for persistence and SWR background refresh via `waitUntil()`.
-- Outside Vercel (e.g., local dev or Node runtimes without `@vercel/functions` available): falls back to native `fetch` behavior without caching.
+- **On Vercel** (proxy, functions, routing middleware): entries persist in Runtime Cache per region, and background refresh runs after the response is sent.
+- **Outside Vercel** (`next dev`, tests, other hosts): `@vercel/functions` logs `Runtime Cache unavailable in this environment. Falling back to in-memory cache.` once and uses a process-local in-memory cache. Caching, SWR, and `expireTag()` all still work, but entries are not shared across processes or restarts.
+- **If a cache operation throws**: the request falls through to a plain `fetch` and is returned with `X-Cache-Status: MISS`.
 
-## Edge Runtime Compatibility
-
-This package is designed specifically for the Edge Runtime and works in Next.js Middleware using either Edge or Node.js runtime.
+Both the Node.js runtime (the default for `proxy.ts` in Next 16) and the deprecated Edge runtime are supported.
 
 ## Limitations
 
 - Only caches successful responses (2xx status codes)
 - Only caches GET, POST, and PUT requests
-- Cache tags are stored but on-demand revalidation is not yet implemented
-- Runtime Cache has size limits (check Vercel documentation)
-- The `getCache` function from `@vercel/functions` is only available at runtime on Vercel's infrastructure
+- Next's `revalidateTag()` / `revalidatePath()` do not affect Runtime Cache; use `expireTag()`
+- Runtime Cache limits apply (2 MB per entry, 128 tags per entry at the time of writing; check the [Vercel docs](https://vercel.com/docs/caching/runtime-cache))
 
 ## Contributing
 

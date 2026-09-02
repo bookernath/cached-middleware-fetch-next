@@ -35,9 +35,11 @@ export interface CachedFetchOptions extends Omit<RequestInit, 'cache'> {
     expires?: number;
     
     /**
-     * Set cache tags for manual cache invalidation
-     * Note: Tag-based revalidation is not automatically supported,
-     * but tags can be used with Vercel's cache APIs for manual clearing
+     * Cache tags for on-demand invalidation.
+     * Tags are attached to the Vercel Runtime Cache entry, so entries can be
+     * expired with this package's `expireTag()` (or `getCache().expireTag()`
+     * from @vercel/functions). Next's `revalidateTag()` does NOT affect the
+     * Runtime Cache.
      */
     tags?: string[];
     

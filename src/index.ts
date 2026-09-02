@@ -1,9 +1,88 @@
-// @ts-ignore - getCache and waitUntil are available at runtime on Vercel
 import { getCache, waitUntil } from '@vercel/functions';
 import type { CachedFetchOptions, CacheEntry } from './types';
 
 // Re-export types for convenience
 export type { CachedFetchOptions, CacheEntry } from './types';
+
+/**
+ * Lazily resolved `after()` from next/server.
+ *
+ * `after()` is Next's first-party way to run work once the response has been
+ * sent and is supported in proxy.ts (Next >= 15.1). It is resolved dynamically
+ * so this package keeps working on older Next versions and outside of a
+ * Next.js request scope, where we fall back to Vercel's `waitUntil()`.
+ */
+type AfterFn = (task: (() => Promise<unknown>) | Promise<unknown>) => void;
+let afterFnPromise: Promise<AfterFn | undefined> | undefined;
+function resolveAfter(): Promise<AfterFn | undefined> {
+  if (!afterFnPromise) {
+    afterFnPromise = import('next/server')
+      .then((mod: any) => (typeof mod?.after === 'function' ? (mod.after as AfterFn) : undefined))
+      .catch(() => undefined);
+  }
+  return afterFnPromise;
+}
+// Warm the lookup at module load so the first STALE response does not wait on it
+void resolveAfter();
+
+/**
+ * Human-readable name for a Runtime Cache entry (shown in Vercel observability).
+ * The query string and fragment are stripped so API keys or signed tokens in
+ * the URL never appear in plaintext in the dashboard.
+ */
+function cacheEntryName(method: string, url: string): string {
+  try {
+    const u = new URL(url);
+    return `${method} ${u.origin}${u.pathname}`;
+  } catch {
+    return `${method} ${url.split(/[?#]/)[0]}`;
+  }
+}
+
+/**
+ * Options for Runtime Cache set(): omit `tags` entirely when none were given
+ */
+function cacheSetOptions(entry: CacheEntry, ttl: number, method: string, url: string) {
+  return {
+    ttl,
+    name: cacheEntryName(method, url),
+    ...(entry.tags && entry.tags.length > 0 ? { tags: entry.tags } : {}),
+  };
+}
+
+/**
+ * Schedule a background task without blocking the response.
+ *
+ * Preference order:
+ * 1. `after()` from next/server (first-party, supported in proxy.ts)
+ * 2. `waitUntil()` from @vercel/functions (Vercel Functions runtime)
+ * 3. Fire-and-forget (non-Vercel environments)
+ */
+async function scheduleBackgroundTask(task: () => Promise<void>): Promise<void> {
+  const after = await resolveAfter();
+  if (after) {
+    try {
+      after(task);
+      verboseLog('Background task scheduled with next/server after()');
+      return;
+    } catch {
+      // after() throws when called outside a Next.js request scope; fall through
+    }
+  }
+
+  if (typeof waitUntil === 'function') {
+    try {
+      waitUntil(task());
+      verboseLog('Background task scheduled with waitUntil()');
+      return;
+    } catch {
+      // waitUntil is unavailable outside Vercel; fall through
+    }
+  }
+
+  task().catch(() => {});
+  verboseLog('Background task scheduled as fire-and-forget (no after()/waitUntil available)');
+}
 
 /**
  * Verbose logger that only logs when CACHED_MIDDLEWARE_FETCH_LOGGER=1
@@ -138,7 +217,7 @@ function processHeadersForCacheKey(headers: HeadersInit | undefined): Record<str
  * Generate SHA-256 hash of a string
  */
 async function sha256(message: string): Promise<string> {
-  // Check if we're in Edge runtime (crypto.subtle is available)
+  // Web Crypto (available in Node >= 20 and edge runtimes)
   if (typeof crypto !== 'undefined' && crypto.subtle && crypto.subtle.digest) {
     const encoder = new TextEncoder();
     const data = encoder.encode(message);
@@ -372,8 +451,21 @@ function computeTTL(expiresAt?: number): number {
 }
 
 /**
- * A fetch wrapper that uses Vercel Runtime Cache for caching
- * Mimics Next.js Data Cache API for use in edge middleware
+ * Expire every cache entry created with the given tag(s) via `next.tags`.
+ *
+ * Thin wrapper over Vercel Runtime Cache's `expireTag()`; expirations
+ * propagate across all regions. Can be called from a Route Handler, Server
+ * Action, or proxy.ts.
+ */
+export async function expireTag(tag: string | string[]): Promise<void> {
+  verboseLog(`Expiring cache tag(s): ${Array.isArray(tag) ? tag.join(', ') : tag}`);
+  await getCache().expireTag(tag);
+}
+
+/**
+ * A fetch wrapper that uses Vercel Runtime Cache for caching.
+ * Mimics the Next.js Data Cache fetch API for use in proxy.ts (formerly
+ * middleware.ts), where Next's built-in fetch caching has no effect.
  */
 export async function cachedFetch(
   input: RequestInfo | URL,
@@ -459,7 +551,7 @@ export async function cachedFetch(
               if (freshResponse.ok && (method === 'GET' || method === 'POST' || method === 'PUT')) {
                 const freshCacheEntry = await responseToCache(freshResponse.clone(), init);
                 const cacheTTL = computeTTL(freshCacheEntry.expiresAt);
-                await cache.set(cacheKey, freshCacheEntry, { ttl: cacheTTL });
+                await cache.set(cacheKey, freshCacheEntry, cacheSetOptions(freshCacheEntry, cacheTTL, method, url));
                 verboseLog(`Background refresh completed and cached (TTL: ${cacheTTL}s)`);
               } else {
                 verboseLog(`Background refresh completed but not cached (status: ${freshResponse.status}, method: ${method})`);
@@ -469,15 +561,8 @@ export async function cachedFetch(
             }
           };
           
-          // Use waitUntil to extend the lifetime of the request for background refresh
-          if (typeof waitUntil === 'function') {
-            waitUntil(backgroundRefresh());
-            verboseLog(`Background refresh scheduled with waitUntil`);
-          } else {
-            // Fallback if waitUntil is not available (non-Vercel environment)
-            backgroundRefresh().catch(() => {});
-            verboseLog(`Background refresh scheduled as fire-and-forget (no waitUntil available)`);
-          }
+          // Extend the lifetime of the request so the refresh completes after the response is sent
+          await scheduleBackgroundTask(backgroundRefresh);
         } else {
           verboseLog(`Cache HIT (age: ${cacheAge}s, expires in: ${expiresIn}s)`);
         }
@@ -525,7 +610,7 @@ export async function cachedFetch(
       const cacheTTL = computeTTL(cacheEntry.expiresAt);
       verboseLog(`Storing in cache with TTL: ${cacheTTL}s, expires at: ${cacheEntry.expiresAt ? new Date(cacheEntry.expiresAt).toISOString() : 'never'}`);
       
-      cache.set(cacheKey, cacheEntry, { ttl: cacheTTL }).catch((error: unknown) => {
+      cache.set(cacheKey, cacheEntry, cacheSetOptions(cacheEntry, cacheTTL, method, url)).catch((error: unknown) => {
         console.error('[cached-middleware-fetch] Failed to cache response:', error);
       });
     } else {
