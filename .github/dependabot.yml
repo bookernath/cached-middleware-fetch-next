@@ -18,6 +18,19 @@ updates:
     labels:
       - "dependencies"
       - "automated"
+    # Land routine dev-dependency bumps as one PR instead of one PR per package
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # TypeScript 7 (native/Go compiler) has no JS compiler API, which tsup's
+      # declaration build (rollup-plugin-dts) requires. Re-enable once tsup
+      # supports it: https://github.com/egoist/tsup/issues/1405
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   # Enable version updates for GitHub Actions
   - package-ecosystem: "github-actions"
@@ -37,3 +50,7 @@ updates:
     labels:
       - "github-actions"
       - "automated"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
